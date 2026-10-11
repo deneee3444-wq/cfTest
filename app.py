@@ -1,9 +1,10 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, Response
 from cloakbrowser import launch_persistent_context
 import threading
 import requests
 import time
 import os
+import io
 
 app = Flask(__name__)
 
@@ -19,18 +20,26 @@ TARGET = "https://www.yolly.ai"
 SIGNIN = TARGET + "/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"
 PROFILE_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "browser_profile_cloak")
 
+# Webshare Proxy Bilgileri
+DEFAULT_PROXY = "http://plasthjw-1:vh917rfhzcxi@p.webshare.io:80"
+PROXY = os.environ.get("PROXY", DEFAULT_PROXY)
+
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept-Language": "tr-TR,tr;q=0.9",
 })
+if PROXY:
+    session.proxies = {"http": PROXY, "https": PROXY}
 
 state = {
     "token": None,
     "browser_running": False,
-    "last_updated": 0,
-    "page_ref": None,
+    "last_screenshot": None,
+    "screenshot_requested": False,
+    "reload_requested": False,
+    "last_ss_time": 0,
 }
 
 INDEX = """
@@ -38,15 +47,15 @@ INDEX = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Cloudflare Turnstile Token (CloakBrowser)</title>
+  <title>Cloudflare Turnstile Token & Ekran (CloakBrowser)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      max-width: 500px;
-      margin: 40px auto;
+      max-width: 560px;
+      margin: 30px auto;
       padding: 0 16px;
-      color: #333;
+      color: #1e293b;
       background: #f8fafc;
     }
     .card {
@@ -55,10 +64,11 @@ INDEX = """
       border-radius: 12px;
       box-shadow: 0 4px 14px rgba(0,0,0,0.06);
       border: 1px solid #e2e8f0;
+      margin-bottom: 20px;
     }
     h2 {
       margin-top: 0;
-      margin-bottom: 8px;
+      margin-bottom: 6px;
       text-align: center;
       font-size: 20px;
       color: #0f172a;
@@ -66,14 +76,29 @@ INDEX = """
     .subtitle {
       color: #64748b;
       font-size: 13px;
-      margin-bottom: 20px;
+      margin-bottom: 18px;
       text-align: center;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: bold;
+      background: #e2e8f0;
+      color: #475569;
+    }
+    .proxy-info {
+      text-align: center;
+      margin-bottom: 14px;
+      font-size: 12px;
+      color: #475569;
     }
     .status-badge {
       padding: 12px 16px;
       border-radius: 8px;
       font-size: 14px;
-      margin: 16px 0;
+      margin: 14px 0;
       font-weight: 600;
       text-align: center;
       transition: all 0.3s ease;
@@ -103,7 +128,7 @@ INDEX = """
     textarea {
       width: 100%;
       box-sizing: border-box;
-      height: 120px;
+      height: 100px;
       padding: 10px;
       border: 1px solid #cbd5e1;
       border-radius: 6px;
@@ -124,43 +149,43 @@ INDEX = """
     }
     .btn-group {
       display: flex;
-      gap: 10px;
+      gap: 8px;
       margin-top: 10px;
-      margin-bottom: 20px;
+      margin-bottom: 16px;
     }
     button {
       flex: 1;
-      padding: 12px;
+      padding: 10px;
       border: none;
       border-radius: 6px;
-      font-size: 14px;
+      font-size: 13px;
       font-weight: bold;
       cursor: pointer;
-      transition: background 0.2s;
+      transition: all 0.2s;
     }
     button.copy-btn {
       background: #2563eb;
       color: #fff;
     }
-    button.copy-btn:hover {
-      background: #1d4ed8;
-    }
+    button.copy-btn:hover { background: #1d4ed8; }
     button.refresh-btn {
       background: #f1f5f9;
       color: #334155;
       border: 1px solid #cbd5e1;
     }
-    button.refresh-btn:hover {
-      background: #e2e8f0;
+    button.refresh-btn:hover { background: #e2e8f0; }
+    button.ss-btn {
+      background: #6366f1;
+      color: #fff;
+      margin-bottom: 12px;
     }
+    button.ss-btn:hover { background: #4f46e5; }
     button.send-btn {
       background: #10b981;
       color: #fff;
       width: 100%;
     }
-    button.send-btn:hover {
-      background: #059669;
-    }
+    button.send-btn:hover { background: #059669; }
     button:disabled {
       background: #e2e8f0 !important;
       color: #94a3b8 !important;
@@ -170,10 +195,27 @@ INDEX = """
     .divider {
       height: 1px;
       background: #e2e8f0;
-      margin: 20px 0;
+      margin: 18px 0;
+    }
+    .screenshot-box {
+      margin-top: 10px;
+      text-align: center;
+      background: #0f172a;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid #334155;
+      min-height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .screenshot-box img {
+      max-width: 100%;
+      height: auto;
+      display: block;
     }
     pre {
-      margin-top: 15px;
+      margin-top: 12px;
       background: #f1f5f9;
       padding: 10px;
       border-radius: 6px;
@@ -181,7 +223,6 @@ INDEX = """
       white-space: pre-wrap;
       word-break: break-all;
       border: 1px solid #e2e8f0;
-      min-height: 20px;
       display: none;
     }
   </style>
@@ -189,7 +230,11 @@ INDEX = """
 <body>
   <div class="card">
     <h2>Cloudflare Turnstile Token</h2>
-    <div class="subtitle">CloakBrowser ile arka planda otomatik üretilir</div>
+    <div class="subtitle">CloakBrowser + Proxy ile Otomatik Yakalama</div>
+
+    <div class="proxy-info">
+      <span class="badge">Proxy Aktif</span> <code>p.webshare.io:80</code>
+    </div>
 
     <div id="status" class="status-badge waiting">⏳ Token alınıyor, lütfen bekleyin...</div>
 
@@ -199,6 +244,15 @@ INDEX = """
     <div class="btn-group">
       <button id="copyBtn" class="copy-btn" disabled onclick="copyToken()">📋 Token'ı Kopyala</button>
       <button id="refreshBtn" class="refresh-btn" onclick="refreshToken()">🔄 Yeni Token Al</button>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- EKRAN GÖRÜNTÜSÜ BÖLÜMÜ -->
+    <button class="ss-btn" onclick="takeScreenshot()">📸 Canlı Tarayıcı Ekran Görüntüsü Al</button>
+    
+    <div id="ssContainer" class="screenshot-box">
+      <span style="color:#94a3b8; font-size:12px;">Ekran görüntüsü almak için yukarıdaki butona tıklayın</span>
     </div>
 
     <div class="divider"></div>
@@ -224,7 +278,7 @@ INDEX = """
       statusEl.textContent = '✔ Token Başarıyla Alındı!';
     }
 
-    // Backend'de yakalanan token'ı her saniye sorgula
+    // Backend'de yakalanan token'ı düzenli sorgula
     setInterval(async () => {
       if (!currentToken) {
         try {
@@ -257,6 +311,24 @@ INDEX = """
       statusEl.textContent = '⏳ Yeni token alınıyor, lütfen bekleyin...';
 
       await fetch('/reset-token');
+      // Otomatik yeni ekran görüntüsü de al
+      setTimeout(takeScreenshot, 2000);
+    }
+
+    async function takeScreenshot() {
+      const container = document.getElementById('ssContainer');
+      container.innerHTML = '<span style="color:#94a3b8; font-size:12px;">📸 Ekran görüntüsü alınıyor...</span>';
+      
+      const url = '/screenshot?t=' + Date.now();
+      const img = new Image();
+      img.onload = () => {
+        container.innerHTML = '';
+        container.appendChild(img);
+      };
+      img.onerror = () => {
+        container.innerHTML = '<span style="color:#ef4444; font-size:12px;">Ekran görüntüsü henüz hazır değil, tekrar deneyin.</span>';
+      };
+      img.src = url;
     }
 
     async function sendCode() {
@@ -303,14 +375,22 @@ def index():
 def get_token():
     return jsonify({"token": state["token"]})
 
+@app.route("/screenshot")
+def screenshot():
+    state["screenshot_requested"] = True
+    # Arka plan tarayıcısının ekran görüntüsü alması için 1.5 saniyeye kadar bekle
+    for _ in range(15):
+        time.sleep(0.1)
+        if not state["screenshot_requested"] and state["last_screenshot"]:
+            break
+    if state["last_screenshot"]:
+        return Response(state["last_screenshot"], mimetype="image/png")
+    return "Tarayici henuz ilk ekran goruntusunu almadi, lutfen 3 saniye sonra tekrar deneyin.", 503
+
 @app.route("/reset-token")
 def reset_token():
     state["token"] = None
-    if state["page_ref"]:
-        try:
-            state["page_ref"].reload()
-        except Exception:
-            pass
+    state["reload_requested"] = True
     return jsonify({"ok": True})
 
 @app.route("/set-token", methods=["POST", "OPTIONS"])
@@ -359,10 +439,11 @@ def cloak_monitor():
     os.makedirs(PROFILE_DIR, exist_ok=True)
     
     try:
-        print("[*] CloakBrowser headless olarak baslatiliyor...", flush=True)
+        print(f"[*] CloakBrowser headless olarak baslatiliyor (Proxy: {PROXY})...", flush=True)
         context = launch_persistent_context(
             user_data_dir=PROFILE_DIR,
             headless=True,
+            proxy=PROXY,
             humanize=True,
             stealth_args=True,
             args=[
@@ -379,14 +460,48 @@ def cloak_monitor():
         print(f"[*] CloakBrowser yolly.ai giris sayfasina gidiyor: {SIGNIN}", flush=True)
         page.goto(SIGNIN)
 
+        # Ilk ekran goruntusunu hemen al
+        try:
+            state["last_screenshot"] = page.screenshot()
+            state["last_ss_time"] = time.time()
+        except Exception:
+            pass
+
         while True:
             time.sleep(1.0)
             
-            # Eger token zaten varsa ve resetlenmediyse bekle
+            # Sayfa yenileme istegi varsa kendi thread'inde yenile
+            if state["reload_requested"]:
+                try:
+                    page.reload()
+                except Exception:
+                    pass
+                state["reload_requested"] = False
+
+            # Ekran goruntusu istendiyse veya her 3 saniyede bir guncelle
+            if state["screenshot_requested"] or (time.time() - state["last_ss_time"] > 3):
+                try:
+                    state["last_screenshot"] = page.screenshot()
+                    state["last_ss_time"] = time.time()
+                except Exception:
+                    pass
+                state["screenshot_requested"] = False
+
+            # Eger token zaten varsa bekle
             if state["token"]:
                 continue
 
             try:
+                # 1. Turnstile kutucugu varsa otomatik tiklamayi dene
+                for frame in page.frames:
+                    if "challenges.cloudflare.com" in frame.url:
+                        try:
+                            # Frame body'sine tikla
+                            frame.locator('body').click(timeout=1500)
+                        except Exception:
+                            pass
+
+                # 2. Token degeri uretilmis mi kontrol et
                 found = None
                 for p_item in context.pages:
                     if p_item.is_closed():
@@ -415,7 +530,7 @@ def cloak_monitor():
                             session.cookies.set(c['name'], c['value'], domain=c['domain'])
                     except Exception:
                         pass
-            except Exception as e:
+            except Exception:
                 pass
     except Exception as e:
         print("[!] CloakBrowser izleme hatasi:", e, flush=True)
