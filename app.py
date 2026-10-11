@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, render_template_string
-from playwright.sync_api import sync_playwright
+from cloakbrowser import launch_persistent_context
 import threading
 import requests
 import time
@@ -7,7 +7,7 @@ import os
 
 app = Flask(__name__)
 
-# CORS Desteği (Bookmarklet veya harici scriptlerden gelen /set-token istekleri için)
+# CORS Desteği
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
@@ -17,7 +17,7 @@ def add_cors_headers(response):
 
 TARGET = "https://www.yolly.ai"
 SIGNIN = TARGET + "/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"
-PROFILE_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "browser_profile")
+PROFILE_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "browser_profile_cloak")
 
 session = requests.Session()
 session.headers.update({
@@ -28,7 +28,9 @@ session.headers.update({
 
 state = {
     "token": None,
-    "browser_running": False
+    "browser_running": False,
+    "last_updated": 0,
+    "page_ref": None,
 }
 
 INDEX = """
@@ -36,167 +38,175 @@ INDEX = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Turnstile Çöz & Gönder (Render)</title>
+  <title>Cloudflare Turnstile Token (CloakBrowser)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      max-width: 420px;
-      margin: 30px auto;
+      max-width: 500px;
+      margin: 40px auto;
       padding: 0 16px;
       color: #333;
-      background: #fafafa;
+      background: #f8fafc;
     }
     .card {
       background: #fff;
-      padding: 24px 20px;
+      padding: 24px;
       border-radius: 12px;
-      box-shadow: 0 4px 14px rgba(0,0,0,0.08);
-      border: 1px solid #eaeaea;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.06);
+      border: 1px solid #e2e8f0;
     }
-    h3 {
+    h2 {
       margin-top: 0;
-      margin-bottom: 6px;
+      margin-bottom: 8px;
       text-align: center;
       font-size: 20px;
+      color: #0f172a;
     }
     .subtitle {
-      color: #666;
+      color: #64748b;
       font-size: 13px;
-      margin-bottom: 16px;
+      margin-bottom: 20px;
       text-align: center;
     }
-    
-    /* SADECE Turnstile kutucuğunu gösteren kırpılmış çerçeve */
-    .cf-wrapper {
-      width: 300px;
-      height: 65px;
-      overflow: hidden;
-      position: relative;
-      border: 1px solid #e2e8f0;
-      border-radius: 6px;
-      margin: 15px auto;
-      background: #fff;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-    }
-    .cf-wrapper iframe {
-      width: 400px;
-      height: 500px;
-      position: absolute;
-      top: -326px;
-      left: -50px;
-      border: none;
-    }
-
     .status-badge {
-      padding: 10px 14px;
-      border-radius: 6px;
-      font-size: 13px;
-      margin: 14px 0;
-      font-weight: 500;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      margin: 16px 0;
+      font-weight: 600;
       text-align: center;
       transition: all 0.3s ease;
     }
-    .waiting { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
-    .ready { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-
+    .waiting {
+      background: #fef3c7;
+      color: #92400e;
+      border: 1px solid #fde68a;
+      animation: pulse 1.5s infinite;
+    }
+    .ready {
+      background: #dcfce7;
+      color: #166534;
+      border: 1px solid #bbf7d0;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: #475569;
+      margin-bottom: 6px;
+    }
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      height: 120px;
+      padding: 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 12px;
+      resize: vertical;
+      background: #f8fafc;
+      word-break: break-all;
+    }
     input {
       width: 100%;
       box-sizing: border-box;
-      padding: 11px 12px;
-      margin-bottom: 12px;
-      border: 1px solid #ccc;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      border: 1px solid #cbd5e1;
       border-radius: 6px;
       font-size: 14px;
     }
-    input:focus {
-      outline: none;
-      border-color: #0070f3;
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+      margin-bottom: 20px;
     }
-
-    button.primary {
-      width: 100%;
+    button {
+      flex: 1;
       padding: 12px;
-      background: #0070f3;
-      color: #fff;
       border: none;
       border-radius: 6px;
-      font-size: 15px;
+      font-size: 14px;
       font-weight: bold;
       cursor: pointer;
       transition: background 0.2s;
     }
-    button.primary:disabled {
-      background: #ccc;
-      cursor: not-allowed;
+    button.copy-btn {
+      background: #2563eb;
+      color: #fff;
     }
-    button.secondary {
+    button.copy-btn:hover {
+      background: #1d4ed8;
+    }
+    button.refresh-btn {
+      background: #f1f5f9;
+      color: #334155;
+      border: 1px solid #cbd5e1;
+    }
+    button.refresh-btn:hover {
+      background: #e2e8f0;
+    }
+    button.send-btn {
+      background: #10b981;
+      color: #fff;
       width: 100%;
-      padding: 8px;
-      background: #f0f2f5;
-      color: #333;
-      border: 1px solid #ccc;
-      border-radius: 6px;
-      font-size: 12px;
-      cursor: pointer;
-      margin-top: 6px;
     }
-
-    .token-manual-box {
-      margin-top: 14px;
-      padding-top: 12px;
-      border-top: 1px dashed #ddd;
+    button.send-btn:hover {
+      background: #059669;
     }
-
+    button:disabled {
+      background: #e2e8f0 !important;
+      color: #94a3b8 !important;
+      cursor: not-allowed;
+      border: none;
+    }
+    .divider {
+      height: 1px;
+      background: #e2e8f0;
+      margin: 20px 0;
+    }
     pre {
       margin-top: 15px;
-      background: #f6f8fa;
-      padding: 12px;
+      background: #f1f5f9;
+      padding: 10px;
       border-radius: 6px;
       font-size: 12px;
       white-space: pre-wrap;
       word-break: break-all;
-      border: 1px solid #eaecef;
+      border: 1px solid #e2e8f0;
       min-height: 20px;
-    }
-    .tip-box {
-      background: #f0f7ff;
-      border: 1px solid #cce3ff;
-      border-radius: 6px;
-      padding: 10px 12px;
-      font-size: 12px;
-      color: #0052cc;
-      margin-top: 14px;
-      line-height: 1.4;
+      display: none;
     }
   </style>
 </head>
 <body>
   <div class="card">
-    <h3>Turnstile Çöz & Gönder</h3>
-    <div class="subtitle">Aşağıdaki kutucuğu doğrulayın:</div>
+    <h2>Cloudflare Turnstile Token</h2>
+    <div class="subtitle">CloakBrowser ile arka planda otomatik üretilir</div>
 
-    <!-- SADECE CLOUDFLARE TURNSTILE KUTUCUĞU GÖRÜNÜR -->
-    <div class="cf-wrapper">
-      <iframe id="cf" src="https://www.yolly.ai/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"></iframe>
+    <div id="status" class="status-badge waiting">⏳ Token alınıyor, lütfen bekleyin...</div>
+
+    <label for="tokenBox">Yakalanan Token:</label>
+    <textarea id="tokenBox" readonly placeholder="Token bekleniyor..."></textarea>
+
+    <div class="btn-group">
+      <button id="copyBtn" class="copy-btn" disabled onclick="copyToken()">📋 Token'ı Kopyala</button>
+      <button id="refreshBtn" class="refresh-btn" onclick="refreshToken()">🔄 Yeni Token Al</button>
     </div>
 
-    <div id="status" class="status-badge waiting">⏳ Captcha kutusunu işaretlemeniz bekleniyor...</div>
+    <div class="divider"></div>
 
-    <input id="email" type="email" placeholder="E-posta adresi girin">
-    <button id="btn" class="primary" disabled onclick="gonder()">Gönder</button>
-
-    <!-- Manuel / Panodan Yapıştırma Seçeneği -->
-    <div class="token-manual-box">
-      <input id="manual_token" type="text" placeholder="Token kopyaladıysanız buraya yapıştırın" oninput="manualTokenInput(this.value)">
-      <button class="secondary" onclick="pasteFromClipboard()">📋 Panodan Token Yapıştır</button>
-    </div>
-
+    <label for="email">E-posta ile Doğrulama Kodu Gönder:</label>
+    <input id="email" type="email" placeholder="ornek@domain.com">
+    <button id="sendBtn" class="send-btn" disabled onclick="sendCode()">Doğrulama Kodu Gönder</button>
     <pre id="out"></pre>
-
-    <div class="tip-box">
-      <strong>💡 İpucu:</strong> Kutucukta ✔ Başarılı olduktan sonra buton otomatik açılmazsa, sağ tık &rarr; İncele (DevTools) ile <code>cf-turnstile-response</code> değerini kopyalayıp yukarıdaki kutuya yapıştırabilir ya da "Panodan Token Yapıştır" diyebilirsiniz.
-    </div>
   </div>
 
   <script>
@@ -205,49 +215,16 @@ INDEX = """
     function applyToken(token) {
       if (!token) return;
       currentToken = token;
-      document.getElementById('btn').disabled = false;
+      document.getElementById('tokenBox').value = token;
+      document.getElementById('copyBtn').disabled = false;
+      document.getElementById('sendBtn').disabled = false;
+      
       const statusEl = document.getElementById('status');
       statusEl.className = 'status-badge ready';
-      statusEl.textContent = '✔ Captcha çözüldü! Token hazır.';
-      document.getElementById('out').textContent = 'Aktif Token: ' + token.substring(0, 45) + '...';
+      statusEl.textContent = '✔ Token Başarıyla Alındı!';
     }
 
-    function manualTokenInput(val) {
-      val = val.trim();
-      if (val.length > 20) {
-        applyToken(val);
-        // Sunucuya da bildir
-        fetch('/set-token', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({token: val})
-        }).catch(()=>{});
-      }
-    }
-
-    async function pasteFromClipboard() {
-      try {
-        const text = await navigator.clipboard.readText();
-        if (text && text.trim().length > 20) {
-          document.getElementById('manual_token').value = text.trim();
-          manualTokenInput(text.trim());
-        } else {
-          alert("Panoda geçerli bir token bulunamadı!");
-        }
-      } catch(e) {
-        alert("Pano erişim izni verilmedi. Lütfen token'ı kutuya doğrudan yapıştırın.");
-      }
-    }
-
-    // Tampermonkey veya eklentiden gelen postMessage dinleyicisi
-    window.addEventListener('message', (e) => {
-      if (e.data && (e.data.token || e.data.cfToken)) {
-        const t = e.data.token || e.data.cfToken;
-        applyToken(t);
-      }
-    });
-
-    // Sunucu tarafında (Playwright vb.) yakalanan token'ı düzenli sorgula
+    // Backend'de yakalanan token'ı her saniye sorgula
     setInterval(async () => {
       if (!currentToken) {
         try {
@@ -258,21 +235,46 @@ INDEX = """
           }
         } catch(e) {}
       }
-    }, 500);
+    }, 1000);
 
-    async function gonder() {
+    async function copyToken() {
+      if (!currentToken) return;
+      await navigator.clipboard.writeText(currentToken);
+      const copyBtn = document.getElementById('copyBtn');
+      const oldText = copyBtn.textContent;
+      copyBtn.textContent = '✔ Kopyalandı!';
+      setTimeout(() => { copyBtn.textContent = oldText; }, 2000);
+    }
+
+    async function refreshToken() {
+      currentToken = null;
+      document.getElementById('tokenBox').value = '';
+      document.getElementById('copyBtn').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+      
+      const statusEl = document.getElementById('status');
+      statusEl.className = 'status-badge waiting';
+      statusEl.textContent = '⏳ Yeni token alınıyor, lütfen bekleyin...';
+
+      await fetch('/reset-token');
+    }
+
+    async function sendCode() {
       const email = document.getElementById('email').value.trim();
       if (!email) {
         alert("Lütfen e-posta adresi girin!");
         return;
       }
       if (!currentToken) {
-        alert("Lütfen önce captchayı çözün!");
+        alert("Token henüz hazır değil!");
         return;
       }
 
-      document.getElementById('btn').disabled = true;
-      document.getElementById('out').textContent = "Kod gönderiliyor...";
+      const sendBtn = document.getElementById('sendBtn');
+      const out = document.getElementById('out');
+      sendBtn.disabled = true;
+      out.style.display = 'block';
+      out.textContent = "Kod gönderiliyor...";
 
       try {
         const r = await fetch('/send', {
@@ -281,18 +283,12 @@ INDEX = """
           body: JSON.stringify({email: email, token: currentToken})
         });
         const res = await r.json();
-        document.getElementById('out').textContent = JSON.stringify(res, null, 2);
+        out.textContent = JSON.stringify(res, null, 2);
       } catch (err) {
-        document.getElementById('out').textContent = "Hata: " + err;
+        out.textContent = "Hata: " + err;
+      } finally {
+        sendBtn.disabled = false;
       }
-
-      // Yeni istek için sıfırla
-      currentToken = null;
-      document.getElementById('manual_token').value = "";
-      document.getElementById('status').className = 'status-badge waiting';
-      document.getElementById('status').textContent = '⏳ Yeni captcha bekleniyor...';
-      document.getElementById('cf').src = 'https://www.yolly.ai/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite&t=' + Date.now();
-      await fetch('/reset-token');
     }
   </script>
 </body>
@@ -310,9 +306,13 @@ def get_token():
 @app.route("/reset-token")
 def reset_token():
     state["token"] = None
+    if state["page_ref"]:
+        try:
+            state["page_ref"].reload()
+        except Exception:
+            pass
     return jsonify({"ok": True})
 
-# Manuel veya harici betikten gelen token'ı kabul eden endpoint
 @app.route("/set-token", methods=["POST", "OPTIONS"])
 def set_token():
     if request.method == "OPTIONS":
@@ -321,14 +321,24 @@ def set_token():
     token = data.get("token") or request.form.get("token")
     if token:
         state["token"] = token
-        print(f"[✔] set-token ile yeni token kaydedildi: {token[:35]}...")
+        print("\n" + "="*60, flush=True)
+        print("[SUCCESS] SET-TOKEN ILE TOKEN ALINDI:", flush=True)
+        print(token, flush=True)
+        print("="*60 + "\n", flush=True)
         return jsonify({"ok": True, "token": state["token"]})
-    return jsonify({"ok": False, "error": "No token provided"}), 400
+    return jsonify({"ok": False, "error": "No token"}), 400
 
-# ---------- Token + email ile yolly.ai'ye kod gönderme ----------
 @app.route("/send", methods=["POST"])
 def send():
     data = request.get_json(force=True)
+    token = data.get("token") or state["token"]
+    email = data.get("email")
+
+    print("\n" + "="*60, flush=True)
+    print(f"[+] /send cagirildi: Email: {email}", flush=True)
+    print(f"[+] Token: {token[:35] if token else 'None'}...", flush=True)
+    print("="*60 + "\n", flush=True)
+
     r = session.post(
         TARGET + "/api/auth/send-code",
         headers={
@@ -337,85 +347,87 @@ def send():
             "origin": TARGET,
             "referer": SIGNIN,
         },
-        json={"email": data["email"], "turnstileToken": data["token"]},
+        json={"email": email, "turnstileToken": token},
         timeout=15,
     )
-    state["token"] = None
     return jsonify({"status": r.status_code, "body": r.text})
 
-# Sunucu tarafında doğrudan yolly.ai'yi izleyen Playwright motoru
-def server_playwright_monitor():
+def cloak_monitor():
     state["browser_running"] = True
-    time.sleep(2.0)
+    time.sleep(1.0)
     
     os.makedirs(PROFILE_DIR, exist_ok=True)
     
     try:
-        with sync_playwright() as p:
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
+        print("[*] CloakBrowser headless olarak baslatiliyor...", flush=True)
+        context = launch_persistent_context(
+            user_data_dir=PROFILE_DIR,
+            headless=True,
+            humanize=True,
+            stealth_args=True,
+            args=[
                 "--disable-infobars",
                 "--no-first-run",
                 "--no-default-browser-check",
-            ]
+                "--window-size=1920,1080",
+            ],
+        )
 
-            # Render Linux ortamında doğrudan Chromium headless
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=PROFILE_DIR,
-                headless=True,
-                args=launch_args,
-                ignore_default_args=["--enable-automation"],
-            )
+        page = context.pages[0] if context.pages else context.new_page()
+        state["page_ref"] = page
 
-            context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                Object.defineProperty(navigator, 'languages', { get: () => ['tr-TR', 'tr', 'en-US', 'en'] });
-            """)
+        print(f"[*] CloakBrowser yolly.ai giris sayfasina gidiyor: {SIGNIN}", flush=True)
+        page.goto(SIGNIN)
 
-            # Sunucu tarafında doğrudan yolly.ai giriş sayfasına git
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(SIGNIN)
+        while True:
+            time.sleep(1.0)
+            
+            # Eger token zaten varsa ve resetlenmediyse bekle
+            if state["token"]:
+                continue
 
-            print("\n[+] Render arka plan tarayıcısı yolly.ai'yi dinliyor...\n")
+            try:
+                found = None
+                for p_item in context.pages:
+                    if p_item.is_closed():
+                        continue
+                    for frame in p_item.frames:
+                        try:
+                            el = frame.query_selector('[name="cf-turnstile-response"]')
+                            if el:
+                                val = el.input_value() or el.get_attribute("value")
+                                if val and len(val) > 20:
+                                    found = val
+                                    break
+                        except Exception:
+                            pass
+                    if found:
+                        break
 
-            while True:
-                time.sleep(0.5)
-                try:
-                    found = None
-                    for p_item in context.pages:
-                        if p_item.is_closed():
-                            continue
-                        for frame in p_item.frames:
-                            try:
-                                el = frame.query_selector('[name="cf-turnstile-response"]')
-                                if el:
-                                    val = el.input_value() or el.get_attribute("value")
-                                    if val and len(val) > 20:
-                                        found = val
-                                        break
-                            except Exception:
-                                pass
-                        if found:
-                            break
-
-                    if found and found != state["token"]:
-                        print(f"\n[✔] Sunucu Playwright Token yakaladı: {found[:40]}...\n")
-                        state["token"] = found
-                except Exception:
-                    pass
+                if found and found != state["token"]:
+                    print("\n" + "="*60, flush=True)
+                    print("[SUCCESS] RENDER CLOAKBROWSER TOKEN YAKALADI VE BASILDI:", flush=True)
+                    print(found, flush=True)
+                    print("="*60 + "\n", flush=True)
+                    state["token"] = found
+                    try:
+                        for c in context.cookies():
+                            session.cookies.set(c['name'], c['value'], domain=c['domain'])
+                    except Exception:
+                        pass
+            except Exception as e:
+                pass
     except Exception as e:
-        print("[!] Render arka plan tarayıcı hatası (Normal olabilir):", e)
+        print("[!] CloakBrowser izleme hatasi:", e, flush=True)
     finally:
         state["browser_running"] = False
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
     
-    # Arka plan tarayıcısını isteğe bağlı başlat
-    if os.environ.get("ENABLE_SERVER_PLAYWRIGHT") == "true":
-        t = threading.Thread(target=server_playwright_monitor, daemon=True)
-        t.start()
-
+    # CloakBrowser arka plan tarayicisini baslat
+    t = threading.Thread(target=cloak_monitor, daemon=True)
+    t.start()
+    
+    print(f"[*] Flask sunucusu baslatiliyor: 0.0.0.0:{port}", flush=True)
     app.run(host="0.0.0.0", port=port, debug=False)
