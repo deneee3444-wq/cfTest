@@ -32,8 +32,8 @@ INDEX = """
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      max-width: 440px;
-      margin: 25px auto;
+      max-width: 400px;
+      margin: 30px auto;
       padding: 0 16px;
       color: #333;
     }
@@ -44,15 +44,28 @@ INDEX = """
     .subtitle {
       color: #666;
       font-size: 13px;
-      margin-bottom: 14px;
+      margin-bottom: 16px;
       text-align: center;
     }
-    iframe {
-      border: 1px solid #ddd;
-      border-radius: 8px;
-      display: block;
-      margin: 0 auto;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    /* SADECE Turnstile kutucuğunu gösteren kırpılmış çerçeve */
+    .cf-wrapper {
+      width: 300px;
+      height: 65px;
+      overflow: hidden;
+      position: relative;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      margin: 15px auto;
+      background: #fff;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .cf-wrapper iframe {
+      width: 400px;
+      height: 500px;
+      position: absolute;
+      top: -326px;
+      left: -50px;
+      border: none;
     }
     .status-badge {
       padding: 10px 14px;
@@ -105,11 +118,12 @@ INDEX = """
 </head>
 <body>
   <h3>Turnstile Çöz & Gönder</h3>
-  <div class="subtitle">Aşağıdaki Turnstile kutucuğunu işaretleyin:</div>
+  <div class="subtitle">Aşağıdaki kutucuğu doğrulayın:</div>
 
-  <!-- Yolly.ai Doğal Iframe (Kırpılmamış, Cloudflare hata vermez) -->
-  <iframe id="cf" src="https://www.yolly.ai/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"
-          width="400" height="460"></iframe>
+  <!-- SADECE CLOUDFLARE TURNSTILE KUTUCUĞU GÖRÜNÜR -->
+  <div class="cf-wrapper">
+    <iframe id="cf" src="https://www.yolly.ai/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"></iframe>
+  </div>
 
   <div id="status" class="status-badge waiting">⏳ Captcha kutusunu işaretlemeniz bekleniyor...</div>
 
@@ -120,6 +134,16 @@ INDEX = """
   <script>
     let currentToken = null;
 
+    function applyToken(token) {
+      if (!token) return;
+      currentToken = token;
+      document.getElementById('btn').disabled = false;
+      const statusEl = document.getElementById('status');
+      statusEl.className = 'status-badge ready';
+      statusEl.textContent = '✔ Captcha çözüldü! Token alındı.';
+      document.getElementById('out').textContent = 'Token: ' + token.substring(0, 45) + '...';
+    }
+
     // Backend'de yakalanan token'ı düzenli sorgula
     setInterval(async () => {
       if (!currentToken) {
@@ -127,12 +151,7 @@ INDEX = """
           const r = await fetch('/get-token');
           const data = await r.json();
           if (data.token) {
-            currentToken = data.token;
-            document.getElementById('btn').disabled = false;
-            const statusEl = document.getElementById('status');
-            statusEl.className = 'status-badge ready';
-            statusEl.textContent = '✔ Captcha çözüldü! Token alındı.';
-            document.getElementById('out').textContent = 'Token: ' + currentToken.substring(0, 45) + '...';
+            applyToken(data.token);
           }
         } catch(e) {}
       }
