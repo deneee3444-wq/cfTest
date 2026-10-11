@@ -189,6 +189,13 @@ def reset_token():
     state["token"] = None
     return jsonify({"ok": True})
 
+# Manuel token yükleme endpoint'i (uzaktan kullanım için)
+@app.route("/set-token", methods=["POST"])
+def set_token():
+    data = request.get_json(force=True)
+    state["token"] = data.get("token")
+    return jsonify({"ok": True, "token": state["token"]})
+
 # ---------- Token + email ile isteği at ----------
 @app.route("/send", methods=["POST"])
 def send():
@@ -207,10 +214,11 @@ def send():
     state["token"] = None
     return jsonify({"status": r.status_code, "body": r.text})
 
-def playwright_monitor():
+def playwright_monitor(port=5001):
     state["browser_running"] = True
-    time.sleep(1.5)
+    time.sleep(2.0)
     
+    is_render = os.environ.get("RENDER") is not None
     os.makedirs(PROFILE_DIR, exist_ok=True)
     
     try:
@@ -220,24 +228,28 @@ def playwright_monitor():
                 "--disable-infobars",
                 "--no-first-run",
                 "--no-default-browser-check",
-                "--start-maximized",
             ]
-            
+            if not is_render:
+                launch_args.append("--start-maximized")
+
+            headless_mode = True if is_render else False
+            channel_val = None if is_render else "chrome"
+
             try:
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=PROFILE_DIR,
-                    channel="chrome",
-                    headless=False,
-                    no_viewport=True,
+                    channel=channel_val,
+                    headless=headless_mode,
+                    no_viewport=not is_render,
                     args=launch_args,
                     ignore_default_args=["--enable-automation"],
                 )
             except Exception:
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=PROFILE_DIR,
-                    channel="msedge",
-                    headless=False,
-                    no_viewport=True,
+                    channel="msedge" if not is_render else None,
+                    headless=headless_mode,
+                    no_viewport=not is_render,
                     args=launch_args,
                     ignore_default_args=["--enable-automation"],
                 )
@@ -261,11 +273,13 @@ def playwright_monitor():
                 });
             """)
 
+            target_url = f"http://127.0.0.1:{port}/"
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto("http://127.0.0.1:5001/")
+            page.goto(target_url)
 
             print("\n" + "="*55)
-            print("[+] Tarayıcı hazır. Turnstile kutucuğunu işaretleyebilirsiniz.")
+            print(f"[+] Tarayıcı hazır ({'Headless/Render' if is_render else 'Pencere'}). Hedef: {target_url}")
+            print("[+] Turnstile kutucuğunu işaretleyebilirsiniz.")
             print("="*55 + "\n")
 
             while True:
@@ -305,6 +319,7 @@ def playwright_monitor():
         state["browser_running"] = False
 
 if __name__ == "__main__":
-    t = threading.Thread(target=playwright_monitor, daemon=True)
+    port = int(os.environ.get("PORT", 5001))
+    t = threading.Thread(target=playwright_monitor, args=(port,), daemon=True)
     t.start()
-    app.run(port=5001, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False)
