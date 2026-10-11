@@ -134,6 +134,16 @@ INDEX = """
   <script>
     let currentToken = null;
 
+    function applyToken(token) {
+      if (!token) return;
+      currentToken = token;
+      document.getElementById('btn').disabled = false;
+      const statusEl = document.getElementById('status');
+      statusEl.className = 'status-badge ready';
+      statusEl.textContent = '✔ Captcha çözüldü! Token alındı.';
+      document.getElementById('out').textContent = 'Token: ' + token.substring(0, 45) + '...';
+    }
+
     // Backend'de yakalanan token'ı düzenli sorgula
     setInterval(async () => {
       if (!currentToken) {
@@ -141,16 +151,29 @@ INDEX = """
           const r = await fetch('/get-token');
           const data = await r.json();
           if (data.token) {
-            currentToken = data.token;
-            document.getElementById('btn').disabled = false;
-            const statusEl = document.getElementById('status');
-            statusEl.className = 'status-badge ready';
-            statusEl.textContent = '✔ Captcha çözüldü! Token alındı.';
-            document.getElementById('out').textContent = 'Token: ' + currentToken.substring(0, 45) + '...';
+            applyToken(data.token);
           }
         } catch(e) {}
       }
-    }, 600);
+    }, 500);
+
+    // Cross-frame mesajlarını da dinle
+    window.addEventListener('message', (e) => {
+      if (e.data) {
+        let t = null;
+        if (typeof e.data === 'string' && e.data.length > 30) t = e.data;
+        else if (e.data.token && typeof e.data.token === 'string') t = e.data.token;
+        else if (e.data.turnstileToken && typeof e.data.turnstileToken === 'string') t = e.data.turnstileToken;
+        if (t) {
+          applyToken(t);
+          fetch('/set-token', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({token: t})
+          }).catch(() => {});
+        }
+      }
+    });
 
     async function gonder() {
       const email = document.getElementById('email').value.trim();
@@ -246,7 +269,6 @@ def playwright_monitor(port=5001):
             if not is_render:
                 launch_args.append("--start-maximized")
 
-            # Render veya Linux üzerinde headless çalış
             headless_mode = True if is_render else False
 
             try:
@@ -303,19 +325,31 @@ def playwright_monitor(port=5001):
                             continue
                         for frame in p_item.frames:
                             try:
-                                el = frame.query_selector('[name="cf-turnstile-response"]')
-                                if el:
-                                    val = el.get_attribute("value")
-                                    if val and len(val) > 20:
-                                        found = val
-                                        break
+                                # DOM property'si olarak dynamic value'yu çek
+                                val = frame.evaluate("""
+                                    () => {
+                                        const el = document.querySelector('[name="cf-turnstile-response"]') || 
+                                                   document.querySelector('input[name*="turnstile"]');
+                                        if (el && el.value && el.value.length > 20) return el.value;
+                                        if (window.turnstile && typeof window.turnstile.getResponse === 'function') {
+                                            try {
+                                                const resp = window.turnstile.getResponse();
+                                                if (resp && resp.length > 20) return resp;
+                                            } catch(e) {}
+                                        }
+                                        return null;
+                                    }
+                                """)
+                                if val and len(val) > 20:
+                                    found = val
+                                    break
                             except Exception:
                                 pass
                         if found:
                             break
 
                     if found and found != state["token"]:
-                        print(f"[✔] Turnstile Token yakalandı: {found[:35]}...")
+                        print(f"\n[✔] Turnstile Token yakalandı: {found[:40]}...\n")
                         state["token"] = found
                         try:
                             for c in context.cookies():
