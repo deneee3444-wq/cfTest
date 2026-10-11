@@ -32,7 +32,7 @@ INDEX = """
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      max-width: 420px;
+      max-width: 440px;
       margin: 25px auto;
       padding: 0 16px;
       color: #333;
@@ -44,28 +44,15 @@ INDEX = """
     .subtitle {
       color: #666;
       font-size: 13px;
-      margin-bottom: 16px;
+      margin-bottom: 14px;
       text-align: center;
     }
-    /* Sadece Cloudflare Turnstile kutucuğunu çerçeveleyen kırpılmış alan */
-    .cf-wrapper {
-      width: 300px;
-      height: 65px;
-      overflow: hidden;
-      position: relative;
-      border-radius: 6px;
-      border: 1px solid #e2e8f0;
-      background: #fff;
-      margin: 15px auto;
+    iframe {
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      display: block;
+      margin: 0 auto;
       box-shadow: 0 2px 6px rgba(0,0,0,0.06);
-    }
-    .cf-wrapper iframe {
-      width: 400px;
-      height: 500px;
-      position: absolute;
-      top: -326px;
-      left: -50px;
-      border: none;
     }
     .status-badge {
       padding: 10px 14px;
@@ -118,12 +105,11 @@ INDEX = """
 </head>
 <body>
   <h3>Turnstile Çöz & Gönder</h3>
-  <div class="subtitle">Aşağıdaki Turnstile kutucuğuna tıklayın:</div>
+  <div class="subtitle">Aşağıdaki Turnstile kutucuğunu işaretleyin:</div>
 
-  <!-- SADECE CAPTCHA KISMI GÖRÜNÜR -->
-  <div class="cf-wrapper">
-    <iframe id="cf" src="https://www.yolly.ai/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"></iframe>
-  </div>
+  <!-- Yolly.ai Doğal Iframe (Kırpılmamış, Cloudflare hata vermez) -->
+  <iframe id="cf" src="https://www.yolly.ai/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"
+          width="400" height="460"></iframe>
 
   <div id="status" class="status-badge waiting">⏳ Captcha kutusunu işaretlemeniz bekleniyor...</div>
 
@@ -134,16 +120,6 @@ INDEX = """
   <script>
     let currentToken = null;
 
-    function applyToken(token) {
-      if (!token) return;
-      currentToken = token;
-      document.getElementById('btn').disabled = false;
-      const statusEl = document.getElementById('status');
-      statusEl.className = 'status-badge ready';
-      statusEl.textContent = '✔ Captcha çözüldü! Token alındı.';
-      document.getElementById('out').textContent = 'Token: ' + token.substring(0, 45) + '...';
-    }
-
     // Backend'de yakalanan token'ı düzenli sorgula
     setInterval(async () => {
       if (!currentToken) {
@@ -151,29 +127,16 @@ INDEX = """
           const r = await fetch('/get-token');
           const data = await r.json();
           if (data.token) {
-            applyToken(data.token);
+            currentToken = data.token;
+            document.getElementById('btn').disabled = false;
+            const statusEl = document.getElementById('status');
+            statusEl.className = 'status-badge ready';
+            statusEl.textContent = '✔ Captcha çözüldü! Token alındı.';
+            document.getElementById('out').textContent = 'Token: ' + currentToken.substring(0, 45) + '...';
           }
         } catch(e) {}
       }
     }, 500);
-
-    // Cross-frame mesajlarını da dinle
-    window.addEventListener('message', (e) => {
-      if (e.data) {
-        let t = null;
-        if (typeof e.data === 'string' && e.data.length > 30) t = e.data;
-        else if (e.data.token && typeof e.data.token === 'string') t = e.data.token;
-        else if (e.data.turnstileToken && typeof e.data.turnstileToken === 'string') t = e.data.turnstileToken;
-        if (t) {
-          applyToken(t);
-          fetch('/set-token', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({token: t})
-          }).catch(() => {});
-        }
-      }
-    });
 
     async function gonder() {
       const email = document.getElementById('email').value.trim();
@@ -226,13 +189,6 @@ def reset_token():
     state["token"] = None
     return jsonify({"ok": True})
 
-# Manuel token yükleme endpoint'i (uzaktan kullanım için)
-@app.route("/set-token", methods=["POST"])
-def set_token():
-    data = request.get_json(force=True)
-    state["token"] = data.get("token")
-    return jsonify({"ok": True, "token": state["token"]})
-
 # ---------- Token + email ile isteği at ----------
 @app.route("/send", methods=["POST"])
 def send():
@@ -251,11 +207,10 @@ def send():
     state["token"] = None
     return jsonify({"status": r.status_code, "body": r.text})
 
-def playwright_monitor(port=5001):
+def playwright_monitor():
     state["browser_running"] = True
-    time.sleep(2.0)
+    time.sleep(1.5)
     
-    is_render = os.environ.get("RENDER") is not None
     os.makedirs(PROFILE_DIR, exist_ok=True)
     
     try:
@@ -265,25 +220,24 @@ def playwright_monitor(port=5001):
                 "--disable-infobars",
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--start-maximized",
             ]
-            if not is_render:
-                launch_args.append("--start-maximized")
-
-            headless_mode = True if is_render else False
-
+            
             try:
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=PROFILE_DIR,
-                    channel="chrome" if not is_render else None,
-                    headless=headless_mode,
-                    no_viewport=True if not is_render else False,
+                    channel="chrome",
+                    headless=False,
+                    no_viewport=True,
                     args=launch_args,
                     ignore_default_args=["--enable-automation"],
                 )
             except Exception:
                 context = p.chromium.launch_persistent_context(
                     user_data_dir=PROFILE_DIR,
-                    headless=headless_mode,
+                    channel="msedge",
+                    headless=False,
+                    no_viewport=True,
                     args=launch_args,
                     ignore_default_args=["--enable-automation"],
                 )
@@ -307,13 +261,11 @@ def playwright_monitor(port=5001):
                 });
             """)
 
-            target_url = f"http://127.0.0.1:{port}/"
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(target_url)
+            page.goto("http://127.0.0.1:5001/")
 
             print("\n" + "="*55)
-            print(f"[+] Tarayıcı hazır ({'Headless/Render' if is_render else 'Pencere'}). Hedef: {target_url}")
-            print("[+] Turnstile kutucuğunu işaretleyebilirsiniz.")
+            print("[+] Tarayıcı hazır. Turnstile kutucuğunu işaretleyebilirsiniz.")
             print("="*55 + "\n")
 
             while True:
@@ -325,24 +277,13 @@ def playwright_monitor(port=5001):
                             continue
                         for frame in p_item.frames:
                             try:
-                                # DOM property'si olarak dynamic value'yu çek
-                                val = frame.evaluate("""
-                                    () => {
-                                        const el = document.querySelector('[name="cf-turnstile-response"]') || 
-                                                   document.querySelector('input[name*="turnstile"]');
-                                        if (el && el.value && el.value.length > 20) return el.value;
-                                        if (window.turnstile && typeof window.turnstile.getResponse === 'function') {
-                                            try {
-                                                const resp = window.turnstile.getResponse();
-                                                if (resp && resp.length > 20) return resp;
-                                            } catch(e) {}
-                                        }
-                                        return null;
-                                    }
-                                """)
-                                if val and len(val) > 20:
-                                    found = val
-                                    break
+                                el = frame.query_selector('[name="cf-turnstile-response"]')
+                                if el:
+                                    # input_value dinamik JS değerini alır
+                                    val = el.input_value() or el.get_attribute("value")
+                                    if val and len(val) > 20:
+                                        found = val
+                                        break
                             except Exception:
                                 pass
                         if found:
@@ -364,7 +305,6 @@ def playwright_monitor(port=5001):
         state["browser_running"] = False
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5001))
-    t = threading.Thread(target=playwright_monitor, args=(port,), daemon=True)
+    t = threading.Thread(target=playwright_monitor, daemon=True)
     t.start()
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(port=5001, debug=False)
