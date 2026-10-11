@@ -7,6 +7,14 @@ import os
 
 app = Flask(__name__)
 
+# CORS Desteği (Bookmarklet veya harici scriptlerden gelen /set-token istekleri için)
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
 TARGET = "https://www.yolly.ai"
 SIGNIN = TARGET + "/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"
 PROFILE_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "browser_profile")
@@ -28,18 +36,29 @@ INDEX = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Turnstile Çöz & Gönder</title>
+  <title>Turnstile Çöz & Gönder (Render)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      max-width: 400px;
+      max-width: 420px;
       margin: 30px auto;
       padding: 0 16px;
       color: #333;
+      background: #fafafa;
+    }
+    .card {
+      background: #fff;
+      padding: 24px 20px;
+      border-radius: 12px;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.08);
+      border: 1px solid #eaeaea;
     }
     h3 {
+      margin-top: 0;
       margin-bottom: 6px;
       text-align: center;
+      font-size: 20px;
     }
     .subtitle {
       color: #666;
@@ -47,6 +66,7 @@ INDEX = """
       margin-bottom: 16px;
       text-align: center;
     }
+    
     /* SADECE Turnstile kutucuğunu gösteren kırpılmış çerçeve */
     .cf-wrapper {
       width: 300px;
@@ -67,27 +87,34 @@ INDEX = """
       left: -50px;
       border: none;
     }
+
     .status-badge {
       padding: 10px 14px;
       border-radius: 6px;
       font-size: 13px;
-      margin: 14px 0 12px 0;
+      margin: 14px 0;
       font-weight: 500;
       text-align: center;
       transition: all 0.3s ease;
     }
     .waiting { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
     .ready { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+
     input {
       width: 100%;
       box-sizing: border-box;
-      padding: 10px 12px;
-      margin-bottom: 10px;
+      padding: 11px 12px;
+      margin-bottom: 12px;
       border: 1px solid #ccc;
       border-radius: 6px;
       font-size: 14px;
     }
-    button {
+    input:focus {
+      outline: none;
+      border-color: #0070f3;
+    }
+
+    button.primary {
       width: 100%;
       padding: 12px;
       background: #0070f3;
@@ -99,10 +126,28 @@ INDEX = """
       cursor: pointer;
       transition: background 0.2s;
     }
-    button:disabled {
-      background: #bbb;
+    button.primary:disabled {
+      background: #ccc;
       cursor: not-allowed;
     }
+    button.secondary {
+      width: 100%;
+      padding: 8px;
+      background: #f0f2f5;
+      color: #333;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-top: 6px;
+    }
+
+    .token-manual-box {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px dashed #ddd;
+    }
+
     pre {
       margin-top: 15px;
       background: #f6f8fa;
@@ -114,22 +159,45 @@ INDEX = """
       border: 1px solid #eaecef;
       min-height: 20px;
     }
+    .tip-box {
+      background: #f0f7ff;
+      border: 1px solid #cce3ff;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 12px;
+      color: #0052cc;
+      margin-top: 14px;
+      line-height: 1.4;
+    }
   </style>
 </head>
 <body>
-  <h3>Turnstile Çöz & Gönder</h3>
-  <div class="subtitle">Aşağıdaki kutucuğu doğrulayın:</div>
+  <div class="card">
+    <h3>Turnstile Çöz & Gönder</h3>
+    <div class="subtitle">Aşağıdaki kutucuğu doğrulayın:</div>
 
-  <!-- SADECE CLOUDFLARE TURNSTILE KUTUCUĞU GÖRÜNÜR -->
-  <div class="cf-wrapper">
-    <iframe id="cf" src="https://www.yolly.ai/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"></iframe>
+    <!-- SADECE CLOUDFLARE TURNSTILE KUTUCUĞU GÖRÜNÜR -->
+    <div class="cf-wrapper">
+      <iframe id="cf" src="https://www.yolly.ai/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"></iframe>
+    </div>
+
+    <div id="status" class="status-badge waiting">⏳ Captcha kutusunu işaretlemeniz bekleniyor...</div>
+
+    <input id="email" type="email" placeholder="E-posta adresi girin">
+    <button id="btn" class="primary" disabled onclick="gonder()">Gönder</button>
+
+    <!-- Manuel / Panodan Yapıştırma Seçeneği -->
+    <div class="token-manual-box">
+      <input id="manual_token" type="text" placeholder="Token kopyaladıysanız buraya yapıştırın" oninput="manualTokenInput(this.value)">
+      <button class="secondary" onclick="pasteFromClipboard()">📋 Panodan Token Yapıştır</button>
+    </div>
+
+    <pre id="out"></pre>
+
+    <div class="tip-box">
+      <strong>💡 İpucu:</strong> Kutucukta ✔ Başarılı olduktan sonra buton otomatik açılmazsa, sağ tık &rarr; İncele (DevTools) ile <code>cf-turnstile-response</code> değerini kopyalayıp yukarıdaki kutuya yapıştırabilir ya da "Panodan Token Yapıştır" diyebilirsiniz.
+    </div>
   </div>
-
-  <div id="status" class="status-badge waiting">⏳ Captcha kutusunu işaretlemeniz bekleniyor...</div>
-
-  <input id="email" type="email" placeholder="E-posta adresi girin">
-  <button id="btn" disabled onclick="gonder()">Gönder</button>
-  <pre id="out"></pre>
 
   <script>
     let currentToken = null;
@@ -140,11 +208,46 @@ INDEX = """
       document.getElementById('btn').disabled = false;
       const statusEl = document.getElementById('status');
       statusEl.className = 'status-badge ready';
-      statusEl.textContent = '✔ Captcha çözüldü! Token alındı.';
-      document.getElementById('out').textContent = 'Token: ' + token.substring(0, 45) + '...';
+      statusEl.textContent = '✔ Captcha çözüldü! Token hazır.';
+      document.getElementById('out').textContent = 'Aktif Token: ' + token.substring(0, 45) + '...';
     }
 
-    // Backend'de yakalanan token'ı düzenli sorgula
+    function manualTokenInput(val) {
+      val = val.trim();
+      if (val.length > 20) {
+        applyToken(val);
+        // Sunucuya da bildir
+        fetch('/set-token', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({token: val})
+        }).catch(()=>{});
+      }
+    }
+
+    async function pasteFromClipboard() {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text && text.trim().length > 20) {
+          document.getElementById('manual_token').value = text.trim();
+          manualTokenInput(text.trim());
+        } else {
+          alert("Panoda geçerli bir token bulunamadı!");
+        }
+      } catch(e) {
+        alert("Pano erişim izni verilmedi. Lütfen token'ı kutuya doğrudan yapıştırın.");
+      }
+    }
+
+    // Tampermonkey veya eklentiden gelen postMessage dinleyicisi
+    window.addEventListener('message', (e) => {
+      if (e.data && (e.data.token || e.data.cfToken)) {
+        const t = e.data.token || e.data.cfToken;
+        applyToken(t);
+      }
+    });
+
+    // Sunucu tarafında (Playwright vb.) yakalanan token'ı düzenli sorgula
     setInterval(async () => {
       if (!currentToken) {
         try {
@@ -183,8 +286,9 @@ INDEX = """
         document.getElementById('out').textContent = "Hata: " + err;
       }
 
-      // Yeni token için sıfırla
+      // Yeni istek için sıfırla
       currentToken = null;
+      document.getElementById('manual_token').value = "";
       document.getElementById('status').className = 'status-badge waiting';
       document.getElementById('status').textContent = '⏳ Yeni captcha bekleniyor...';
       document.getElementById('cf').src = 'https://www.yolly.ai/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite&t=' + Date.now();
@@ -208,14 +312,20 @@ def reset_token():
     state["token"] = None
     return jsonify({"ok": True})
 
-# Manuel token yükleme endpoint'i (uzaktan kullanım için)
-@app.route("/set-token", methods=["POST"])
+# Manuel veya harici betikten gelen token'ı kabul eden endpoint
+@app.route("/set-token", methods=["POST", "OPTIONS"])
 def set_token():
-    data = request.get_json(force=True)
-    state["token"] = data.get("token")
-    return jsonify({"ok": True, "token": state["token"]})
+    if request.method == "OPTIONS":
+        return jsonify({"ok": True})
+    data = request.get_json(force=True, silent=True) or {}
+    token = data.get("token") or request.form.get("token")
+    if token:
+        state["token"] = token
+        print(f"[✔] set-token ile yeni token kaydedildi: {token[:35]}...")
+        return jsonify({"ok": True, "token": state["token"]})
+    return jsonify({"ok": False, "error": "No token provided"}), 400
 
-# ---------- Token + email ile isteği at ----------
+# ---------- Token + email ile yolly.ai'ye kod gönderme ----------
 @app.route("/send", methods=["POST"])
 def send():
     data = request.get_json(force=True)
@@ -233,11 +343,11 @@ def send():
     state["token"] = None
     return jsonify({"status": r.status_code, "body": r.text})
 
-def playwright_monitor(port=5001):
+# Sunucu tarafında doğrudan yolly.ai'yi izleyen Playwright motoru
+def server_playwright_monitor():
     state["browser_running"] = True
     time.sleep(2.0)
     
-    is_render = os.environ.get("RENDER") is not None
     os.makedirs(PROFILE_DIR, exist_ok=True)
     
     try:
@@ -248,58 +358,27 @@ def playwright_monitor(port=5001):
                 "--no-first-run",
                 "--no-default-browser-check",
             ]
-            if not is_render:
-                launch_args.append("--start-maximized")
 
-            headless_mode = True if is_render else False
-            channel_val = None if is_render else "chrome"
+            # Render Linux ortamında doğrudan Chromium headless
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=PROFILE_DIR,
+                headless=True,
+                args=launch_args,
+                ignore_default_args=["--enable-automation"],
+            )
 
-            try:
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=PROFILE_DIR,
-                    channel=channel_val,
-                    headless=headless_mode,
-                    no_viewport=not is_render,
-                    args=launch_args,
-                    ignore_default_args=["--enable-automation"],
-                )
-            except Exception:
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=PROFILE_DIR,
-                    channel="msedge" if not is_render else None,
-                    headless=headless_mode,
-                    no_viewport=not is_render,
-                    args=launch_args,
-                    ignore_default_args=["--enable-automation"],
-                )
-
-            # Bot tespitlerini gizle
             context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
-                window.chrome = {
-                    runtime: {},
-                    loadTimes: function() {},
-                    csi: function() {},
-                    app: {}
-                };
-                Object.defineProperty(navigator, 'plugins', {
-                    get: () => [1, 2, 3, 4, 5]
-                });
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['tr-TR', 'tr', 'en-US', 'en']
-                });
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                Object.defineProperty(navigator, 'languages', { get: () => ['tr-TR', 'tr', 'en-US', 'en'] });
             """)
 
-            target_url = f"http://127.0.0.1:{port}/"
+            # Sunucu tarafında doğrudan yolly.ai giriş sayfasına git
             page = context.pages[0] if context.pages else context.new_page()
-            page.goto(target_url)
+            page.goto(SIGNIN)
 
-            print("\n" + "="*55)
-            print(f"[+] Tarayıcı hazır ({'Headless/Render' if is_render else 'Pencere'}). Hedef: {target_url}")
-            print("[+] Turnstile kutucuğunu işaretleyebilirsiniz.")
-            print("="*55 + "\n")
+            print("\n[+] Render arka plan tarayıcısı yolly.ai'yi dinliyor...\n")
 
             while True:
                 time.sleep(0.5)
@@ -312,7 +391,6 @@ def playwright_monitor(port=5001):
                             try:
                                 el = frame.query_selector('[name="cf-turnstile-response"]')
                                 if el:
-                                    # input_value dinamik JS değerini alır
                                     val = el.input_value() or el.get_attribute("value")
                                     if val and len(val) > 20:
                                         found = val
@@ -323,22 +401,21 @@ def playwright_monitor(port=5001):
                             break
 
                     if found and found != state["token"]:
-                        print(f"\n[✔] Turnstile Token yakalandı: {found[:40]}...\n")
+                        print(f"\n[✔] Sunucu Playwright Token yakaladı: {found[:40]}...\n")
                         state["token"] = found
-                        try:
-                            for c in context.cookies():
-                                session.cookies.set(c['name'], c['value'], domain=c['domain'])
-                        except Exception:
-                            pass
                 except Exception:
                     pass
     except Exception as e:
-        print("[!] Tarayıcı izleme hatası:", e)
+        print("[!] Render arka plan tarayıcı hatası (Normal olabilir):", e)
     finally:
         state["browser_running"] = False
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
-    t = threading.Thread(target=playwright_monitor, args=(port,), daemon=True)
-    t.start()
+    
+    # Arka plan tarayıcısını isteğe bağlı başlat
+    if os.environ.get("ENABLE_SERVER_PLAYWRIGHT") == "true":
+        t = threading.Thread(target=server_playwright_monitor, daemon=True)
+        t.start()
+
     app.run(host="0.0.0.0", port=port, debug=False)
