@@ -16,8 +16,8 @@ def add_cors_headers(response):
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
 
-TARGET = "https://apixo.ai"
-SIGNIN = TARGET + "/tr/login"
+TARGET = "https://www.yolly.ai"
+SIGNIN = TARGET + "/auth/signin?callbackUrl=http%3A%2F%2Fwww.yolly.ai%2Finvite"
 PROFILE_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "browser_profile_cloak")
 
 # Webshare Proxy Bilgileri
